@@ -1,6 +1,6 @@
-import express from "express";
-import cors from "cors";
-import OpenAI from "openai";
+const express = require("express");
+const cors = require("cors");
+const OpenAI = require("openai");
 
 const app = express();
 app.use(cors());
@@ -19,7 +19,11 @@ app.post("/ai/chat", async (req, res) => {
     const response = await openai.chat.completions.create({
       model: "gpt-4.1-mini",
       messages: [
-        { role: "system", content: "You are a helpful Thunder Tactical store assistant. Answer questions clearly and professionally." },
+        {
+          role: "system",
+          content:
+            "You are a helpful Thunder Tactical store assistant. Answer questions clearly and professionally."
+        },
         { role: "user", content: userMessage }
       ]
     });
@@ -27,17 +31,17 @@ app.post("/ai/chat", async (req, res) => {
     const reply = response.choices[0].message.content;
     res.json({ reply });
   } catch (err) {
-    console.error("AI Error:", err);
+    console.error("AI Error:", err.response?.data || err.message || err);
     res.status(500).json({ error: "AI request failed" });
   }
 });
 
-// Default Home Route
+// Simple root route
 app.get("/", (req, res) => {
   res.send("Thunder Tactical AI Backend is running!");
 });
 
-// Start Server
+// Start server
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`API running on port ${PORT}`);
