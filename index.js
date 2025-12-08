@@ -1,52 +1,44 @@
-const express = require("express");
-const cors = require("cors");
-const bodyParser = require("body-parser");
-const dotenv = require("dotenv");
-const OpenAI = require("openai");
-
-dotenv.config();
+import express from "express";
+import cors from "cors";
+import OpenAI from "openai";
 
 const app = express();
 app.use(cors());
-app.use(bodyParser.json());
+app.use(express.json());
 
+// Initialize OpenAI client
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
+  apiKey: process.env.OPENAI_API_KEY
 });
 
-app.get("/", (req, res) => {
-  res.send("Thunder Tactical AI backend is running.");
-});
-
+// === AI CHAT ROUTE ===
 app.post("/ai/chat", async (req, res) => {
   try {
-    const { message } = req.body;
+    const userMessage = req.body.message;
 
-    if (!message) {
-      return res.status(400).json({ reply: "No message provided." });
-    }
-
-    const completion = await openai.chat.completions.create({
+    const response = await openai.chat.completions.create({
       model: "gpt-4.1-mini",
       messages: [
-        {
-          role: "system",
-          content:
-            "You are a support agent for Thunder Tactical / Thunder Guns. Provide accurate, professional help.",
-        },
-        {
-          role: "user",
-          content: message,
-        },
-      ],
+        { role: "system", content: "You are a helpful Thunder Tactical store assistant. Answer questions clearly and professionally." },
+        { role: "user", content: userMessage }
+      ]
     });
 
-    res.json({ reply: completion.choices[0].message.content });
+    const reply = response.choices[0].message.content;
+    res.json({ reply });
   } catch (err) {
-    console.error(err);
-    res.json({ reply: "Error processing request." });
+    console.error("AI Error:", err);
+    res.status(500).json({ error: "AI request failed" });
   }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("API running on port " + PORT));
+// Default Home Route
+app.get("/", (req, res) => {
+  res.send("Thunder Tactical AI Backend is running!");
+});
+
+// Start Server
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => {
+  console.log(`API running on port ${PORT}`);
+});
