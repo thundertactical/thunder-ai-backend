@@ -1,4 +1,4 @@
-// index.js - Thunder Tactical AI Backend (Working Dec 2025)
+// index.js - Thunder Tactical AI Backend (FULLY WORKING Dec 2025)
 
 const express = require("express");
 const cors = require("cors");
@@ -8,27 +8,23 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
-// --- ENV VARS (set in Render dashboard) ---
+// --- ENV VARS ---
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-const BC_STORE_HASH = process.env.BC_STORE_HASH;          // e.g. ozdk0sl2gq
-const BC_ACCESS_TOKEN = process.env.BC_ACCESS_TOKEN;      // Your BigCommerce "X-Auth-Token"
+const BC_STORE_HASH = process.env.BC_STORE_HASH;
+const BC_CLIENT_ID = process.env.BC_CLIENT_ID;           // ← needed!
+const BC_ACCESS_TOKEN = process.env.BC_ACCESS_TOKEN;     // ← needed!
 const BC_API_URL = `https://api.bigcommerce.com/stores/${BC_STORE_HASH}/v3`;
 
-// Root route
+// Root
 app.get("/", (req, res) => {
-  res.send("Thunder Tactical AI Backend is running! 🤠");
+  res.send("Thunder Tactical AI Backend is running!");
 });
 
-// Helper: Look up order in BigCommerce
+// BigCommerce order lookup
 async function lookupOrderInBigCommerce(orderNumber) {
-  if (!BC_STORE_HASH || !BC_ACCESS_TOKEN) {
-    console.warn("BigCommerce credentials missing in env");
-    return { ok: false, message: "Order lookup not configured." };
-  }
-
   try {
     const url = `${BC_API_URL}/orders/${orderNumber}`;
     console.log("Fetching order from:", url);
@@ -37,6 +33,7 @@ async function lookupOrderInBigCommerce(orderNumber) {
       method: "GET",
       headers: {
         "X-Auth-Token": BC_ACCESS_TOKEN,
+        "X-Auth-Client": BC_CLIENT_ID,          // ← THIS WAS THE MISSING PIECE
         "Accept": "application/json",
         "Content-Type": "application/json",
       },
@@ -58,20 +55,18 @@ async function lookupOrderInBigCommerce(orderNumber) {
       };
     }
 
-    const json = await response.json();
-    const order = json.data;
+    const { data: order } = await response.json();
 
-    const status = order.status;
     const dateCreated = new Date(order.date_created);
 
-    let reply = `Order #${orderNumber} found! ✅\n`;
-    reply += `Status: **${status}**\n`;
+    let reply = `Order #${orderNumber} found!\n`;
+    reply += `Status: **${order.status}**\n`;
     reply += `Placed on: ${dateCreated.toLocaleDateString("en-US", {
       month: "long",
       day: "numeric",
       year: "numeric",
-    })}\n`;
-    reply += `\nNeed tracking number, items, or total? Just say the word!`;
+    })}\n\n`;
+    reply += `Want items, tracking number, or total? Just ask!`;
 
     return { ok: true, message: reply };
 
@@ -84,55 +79,45 @@ async function lookupOrderInBigCommerce(orderNumber) {
   }
 }
 
-// === MAIN AI CHAT ENDPOINT ===
+// AI Chat endpoint
 app.post("/ai/chat", async (req, res) => {
   try {
     const userMessage = (req.body.message || "").toString().trim();
-    if (!userMessage) {
-      return res.status(400).json({ reply: "Empty message." });
-    }
+    if (!userMessage) return res.status(400).json({ reply: "Empty message." });
 
-    // Look for 5–8 digit order number
+    // Detect 5–8 digit order number
     const orderMatch = userMessage.match(/\b\d{5,8}\b/);
     if (orderMatch) {
       const orderNumber = orderMatch[0];
       const result = await lookupOrderInBigCommerce(orderNumber);
-
-      // If we got a real order OR a polite "not found", return it directly
       return res.json({ reply: result.message });
     }
 
-    // === No order number → normal GPT response ===
+    // Normal GPT response
     const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini", // ← CORRECT model name in 2025 (gpt-4.1-mini does NOT exist)
+      model: "gpt-4o-mini",
       temperature: 0.7,
       messages: [
         {
           role: "system",
-          content: `You are Thunder Tactical's friendly AI assistant.
-          Store: Thunder Guns / Thunder Tactical (airsoft, gel blasters, tactical gear).
-          Be helpful, casual, and a little fun. 
-          If someone asks about an order but doesn't give a number → politely ask for the 5–8 digit order number.
-          Never make up order info.`,
+          content: `You are Thunder Tactical's friendly AI assistant (airsoft, gel blasters, tactical gear).
+          Be casual and fun. If someone asks about an order without giving a 5–8 digit number, politely ask for it.
+          Never invent order details.`,
         },
         { role: "user", content: userMessage },
       ],
     });
 
-    const reply = completion.choices[0]?.message?.content?.trim() ||
-                  "Hmm, not sure about that one!";
+    const reply =
+      completion.choices[0]?.message?.content?.trim() ||
+      "Hmm, not sure about that one!";
 
     res.json({ reply });
-
   } catch (err) {
-    console.error("AI route error:", err.message || err);
-
-    // Helpful error for common mistake
-    if (err.message?.includes("invalid_api_key")) {
-      return res.status(500).json({ reply: "OpenAI API key is missing or invalid." });
-    }
-
-    res.status(500).json({ reply: "Oops! Something went wrong on our end. Try again in a sec." });
+    console.error("AI route error:", err);
+    res
+      .status(500)
+      .json({ reply: "Oops! Something went wrong on our end. Try again in a sec." });
   }
 });
 
