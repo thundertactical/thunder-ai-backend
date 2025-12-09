@@ -9,130 +9,132 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ===== OpenAI SETUP =====
+// --- ENV VARS (set in Render) ---
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// ===== BIGCOMMERCE SETUP =====
-const BC_API_URL = process.env.BC_API_URL;          // e.g. https://api.bigcommerce.com/stores/n41kgeemsh/v3
-const BC_ACCESS_TOKEN = process.env.BC_ACCESS_TOKEN;
+const BC_STORE_HASH = process.env.BC_STORE_HASH;      // e.g. n41kgeemsh
+const BC_ACCESS_TOKEN = process.env.BC_ACCESS_TOKEN;  // "Access token" from BigCommerce
+const BC_CLIENT_ID = process.env.BC_CLIENT_ID;        // "Client ID" from BigCommerce
+const BC_API_URL = (process.env.BC_API_URL || `https://api.bigcommerce.com/stores/${BC_STORE_HASH}/v3`).replace(/\/$/, "");
 
-// Helper: look up an order in BigCommerce
-async function lookupOrder({ email, orderNumber }) {
+// Simple root route
+app.get("/", (req, res) => {
+  res.send("Thunder Tactical AI Backend is running!");
+});
+
+// ---- Helper: Try to look up an order in BigCommerce ----
+async function lookupOrderInBigCommerce(orderNumber) {
+  if (!BC_STORE_HASH || !BC_ACCESS_TOKEN || !BC_CLIENT_ID) {
+    console.warn("BigCommerce env vars missing");
+    return { ok: false, message: "Order lookup is not configured correctly." };
+  }
+
   try {
-    if (!BC_API_URL || !BC_ACCESS_TOKEN) {
-      console.warn("BigCommerce env vars missing, skipping lookup");
-      return null;
-    }
-
-    const params = new URLSearchParams();
-
-    // Search by order ID
-    if (orderNumber) {
-      params.append("id", orderNumber);
-    }
-
-    // Search by customer email
-    if (email) {
-      params.append("email:like", email);
-    }
-
-    // If we have no filters, don't call BC
-    if ([...params.keys()].length === 0) {
-      return null;
-    }
-
-    const url = `${BC_API_URL}/orders?${params.toString()}`;
+    const url = `${BC_API_URL}/orders/${orderNumber}`;
 
     const response = await fetch(url, {
       method: "GET",
       headers: {
         "X-Auth-Token": BC_ACCESS_TOKEN,
+        "X-Auth-Client": BC_CLIENT_ID,
         "Accept": "application/json",
         "Content-Type": "application/json",
       },
     });
 
+    if (response.status === 404) {
+      return {
+        ok: false,
+        message: `I couldn't find an order with the number ${orderNumber}. Please double-check the number.`,
+      };
+    }
+
     if (!response.ok) {
       const text = await response.text();
       console.error("BigCommerce error:", response.status, text);
-      return null;
+      return {
+        ok: false,
+        message: "I had trouble reaching the order system. Please try again in a moment.",
+      };
     }
 
     const data = await response.json();
+    // v3 returns { data: {...}, meta: {...} }, v2 returns the object directly
+    const order = data.data || data;
 
-    if (!data.data || data.data.length === 0) {
-      return null;
+    const status = order.status || order.status_id || "unknown";
+    const created =
+      order.date_created ||
+      order.date_created_utc ||
+      order.date_modified ||
+      null;
+
+    let reply = `I found order #${orderNumber}. Current status: ${status}.`;
+
+    if (created) {
+      try {
+        const date = new Date(created);
+        if (!isNaN(date.getTime())) {
+          reply += ` It was created on ${date.toLocaleDateString("en-US")}.`;
+        }
+      } catch {
+        // ignore date parse errors
+      }
     }
 
-    // Return the first matching order
-    return data.data[0];
+    reply += " If you need more details (items, totals, or tracking), please let me know.";
+
+    return { ok: true, message: reply };
   } catch (err) {
-    console.error("BigCommerce lookup error:", err);
-    return null;
+    console.error("BigCommerce lookup failed:", err);
+    return {
+      ok: false,
+      message: "Something went wrong while checking that order. Please try again shortly.",
+    };
   }
 }
 
-// ===== MAIN CHAT ROUTE =====
+// === AI CHAT ROUTE ===
 app.post("/ai/chat", async (req, res) => {
   try {
-    const userMessage = req.body.message || "";
-
-    // --- Try to extract an email & order number from the user's message ---
-    const emailMatch = userMessage.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
-    const orderMatch = userMessage.match(/\b\d{5,}\b/); // any 5+ digit number
-
-    const email = emailMatch ? emailMatch[0] : null;
-    const orderNumber = orderMatch ? orderMatch[0] : null;
-
-    let orderData = null;
-
-    if (email || orderNumber) {
-      orderData = await lookupOrder({ email, orderNumber });
+    const userMessage = (req.body.message || "").toString().trim();
+    if (!userMessage) {
+      return res.status(400).json({ reply: "No message provided." });
     }
 
-    // --- Build system prompt for the model ---
-    let systemPrompt =
-      "You are a helpful Thunder Tactical store assistant. Answer questions clearly and professionally.";
+    // 1️⃣ Detect possible order-number questions
+    const orderNumberMatch = userMessage.match(/\b\d{5,8}\b/); // e.g. 1312015
+    const mentionsOrder =
+      /order|tracking|shipment|shipping|status/i.test(userMessage);
 
-    if (orderData) {
-      const status = orderData.status || orderData.status_id;
-      const orderId = orderData.id;
-      const dateCreated = orderData.date_created;
-      const total = orderData.total_inc_tax;
+    if (orderNumberMatch && mentionsOrder) {
+      const orderNumber = orderNumberMatch[0];
 
-      systemPrompt +=
-        ` You have live order info for this conversation. ` +
-        `Order details: ID ${orderId}, status ${status}, created ${dateCreated}, total ${total}. ` +
-        `If the customer is asking 'where is my order' or similar, use this data to answer.`;
-    } else if (email || orderNumber) {
-      systemPrompt +=
-        " An order lookup was attempted with the details the customer typed, " +
-        "but no order was found. Politely explain that you couldn't locate an order " +
-        "with those details and ask them to double-check their email and order number.";
+      const result = await lookupOrderInBigCommerce(orderNumber);
+      return res.json({ reply: result.message });
     }
 
-    // --- Ask OpenAI to generate the reply ---
+    // 2️⃣ Fallback: normal AI assistant for general questions
     const response = await openai.chat.completions.create({
       model: "gpt-4.1-mini",
       messages: [
-        { role: "system", content: systemPrompt },
+        {
+          role: "system",
+          content:
+            "You are a helpful Thunder Tactical / Thunder Guns store assistant. Answer questions clearly about products, policies, shipping times, etc. If the customer asks about an order but does NOT include an order number, politely ask them to provide the order number so we can look it up.",
+        },
         { role: "user", content: userMessage },
       ],
     });
 
-    const reply = response.choices[0].message.content;
+    const reply = response.choices[0]?.message?.content || "I'm not sure how to answer that.";
     res.json({ reply });
   } catch (err) {
     console.error("AI Error:", err.response?.data || err.message || err);
-    res.status(500).json({ error: "AI request failed" });
+    res.status(500).json({ reply: "Error processing request." });
   }
-});
-
-// Simple health check
-app.get("/", (req, res) => {
-  res.send("Thunder Tactical AI Backend is running!");
 });
 
 // Start server
