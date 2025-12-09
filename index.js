@@ -61,8 +61,7 @@ async function lookupOrderInBigCommerce(orderNumber) {
     }
 
     const data = await response.json();
-    // v3 returns { data: {...}, meta: {...} }, v2 returns the object directly
-    const order = data.data || data;
+    const order = data.data || data; // v3: {data:{...}}, v2: {...}
 
     const status = order.status || order.status_id || "unknown";
     const created =
@@ -80,7 +79,7 @@ async function lookupOrderInBigCommerce(orderNumber) {
           reply += ` It was created on ${date.toLocaleDateString("en-US")}.`;
         }
       } catch {
-        // ignore date parse errors
+        // ignore parse errors
       }
     }
 
@@ -104,14 +103,11 @@ app.post("/ai/chat", async (req, res) => {
       return res.status(400).json({ reply: "No message provided." });
     }
 
-    // 1️⃣ Detect possible order-number questions
-    const orderNumberMatch = userMessage.match(/\b\d{5,8}\b/); // e.g. 1312015
-    const mentionsOrder =
-      /order|tracking|shipment|shipping|status/i.test(userMessage);
+    // 1️⃣ Detect any 5–8 digit number and treat it as an order number
+    const orderNumberMatch = userMessage.match(/\b\d{5,8}\b/);
 
-    if (orderNumberMatch && mentionsOrder) {
+    if (orderNumberMatch) {
       const orderNumber = orderNumberMatch[0];
-
       const result = await lookupOrderInBigCommerce(orderNumber);
       return res.json({ reply: result.message });
     }
@@ -129,7 +125,8 @@ app.post("/ai/chat", async (req, res) => {
       ],
     });
 
-    const reply = response.choices[0]?.message?.content || "I'm not sure how to answer that.";
+    const reply =
+      response.choices[0]?.message?.content || "I'm not sure how to answer that.";
     res.json({ reply });
   } catch (err) {
     console.error("AI Error:", err.response?.data || err.message || err);
