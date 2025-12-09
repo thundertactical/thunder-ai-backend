@@ -14,10 +14,13 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-const BC_STORE_HASH = process.env.BC_STORE_HASH;      // e.g. n41kgeemsh
+const BC_STORE_HASH = process.env.BC_STORE_HASH;      // e.g. ozdk0sl2gq
 const BC_ACCESS_TOKEN = process.env.BC_ACCESS_TOKEN;  // "Access token" from BigCommerce
-const BC_CLIENT_ID = process.env.BC_CLIENT_ID;        // "Client ID" from BigCommerce
-const BC_API_URL = (process.env.BC_API_URL || `https://api.bigcommerce.com/stores/${BC_STORE_HASH}/v3`).replace(/\/$/, "");
+const BC_CLIENT_ID = process.env.BC_CLIENT_ID;        // not required for this token type, but kept for future use
+const BC_API_URL = (
+  process.env.BC_API_URL ||
+  `https://api.bigcommerce.com/stores/${BC_STORE_HASH}/v3`
+).replace(/\/$/, "");
 
 // Simple root route
 app.get("/", (req, res) => {
@@ -26,21 +29,24 @@ app.get("/", (req, res) => {
 
 // ---- Helper: Try to look up an order in BigCommerce ----
 async function lookupOrderInBigCommerce(orderNumber) {
-  if (!BC_STORE_HASH || !BC_ACCESS_TOKEN || !BC_CLIENT_ID) {
+  // For Store API tokens, we only need store hash + access token
+  if (!BC_STORE_HASH || !BC_ACCESS_TOKEN) {
     console.warn("BigCommerce env vars missing");
-    return { ok: false, message: "Order lookup is not configured correctly." };
+    return {
+      ok: false,
+      message: "Order lookup is not configured correctly.",
+    };
   }
 
   try {
     const url = `${BC_API_URL}/orders/${orderNumber}`;
+    console.log("BigCommerce request URL:", url);
 
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        "X-Auth-Token": BC_ACCESS_TOKEN,
-        "X-Auth-Client": BC_CLIENT_ID,
+        "X-Auth-Token": BC_ACCESS_TOKEN,      // only the access token required
         "Accept": "application/json",
-        "Content-Type": "application/json",
       },
     });
 
@@ -56,7 +62,8 @@ async function lookupOrderInBigCommerce(orderNumber) {
       console.error("BigCommerce error:", response.status, text);
       return {
         ok: false,
-        message: "I had trouble reaching the order system. Please try again in a moment.",
+        message:
+          "I had trouble reaching the order system. Please try again in a moment.",
       };
     }
 
@@ -83,14 +90,16 @@ async function lookupOrderInBigCommerce(orderNumber) {
       }
     }
 
-    reply += " If you need more details (items, totals, or tracking), please let me know.";
+    reply +=
+      " If you need more details (items, totals, or tracking), please let me know.";
 
     return { ok: true, message: reply };
   } catch (err) {
     console.error("BigCommerce lookup failed:", err);
     return {
       ok: false,
-      message: "Something went wrong while checking that order. Please try again shortly.",
+      message:
+        "Something went wrong while checking that order. Please try again shortly.",
     };
   }
 }
@@ -126,7 +135,8 @@ app.post("/ai/chat", async (req, res) => {
     });
 
     const reply =
-      response.choices[0]?.message?.content || "I'm not sure how to answer that.";
+      response.choices[0]?.message?.content ||
+      "I'm not sure how to answer that.";
     res.json({ reply });
   } catch (err) {
     console.error("AI Error:", err.response?.data || err.message || err);
