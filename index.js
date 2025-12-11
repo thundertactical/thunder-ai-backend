@@ -1,4 +1,5 @@
-// index.js - Thunder Tactical AI Backend (FULLY WORKING Dec 2025)
+// index.js
+// Thunder Tactical AI backend + BigCommerce order lookup (CommonJS version)
 
 const express = require("express");
 const cors = require("cors");
@@ -6,123 +7,146 @@ const OpenAI = require("openai");
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json());
 
-// --- ENV VARS ---
+// --- ENV VARS (set in Render) ---
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-const BC_STORE_HASH = process.env.BC_STORE_HASH;
-const BC_CLIENT_ID = process.env.BC_CLIENT_ID;           // ← needed!
-const BC_ACCESS_TOKEN = process.env.BC_ACCESS_TOKEN;     // ← needed!
-const BC_API_URL = `https://api.bigcommerce.com/stores/${BC_STORE_HASH}/v3`;
+const BC_STORE_HASH = process.env.BC_STORE_HASH;       
+const BC_ACCESS_TOKEN = process.env.BC_ACCESS_TOKEN;   
+const BC_API_URL = (
+  process.env.BC_API_URL ||
+  `https://api.bigcommerce.com/stores/${BC_STORE_HASH}/v3`
+).replace(/\/$/, "");
 
-// Root
+// Log environment status (no secrets)
+console.log("BigCommerce ENV at startup:", {
+  BC_STORE_HASH,
+  BC_API_URL,
+  hasAccessToken: !!BC_ACCESS_TOKEN,
+});
+
+// Root route
 app.get("/", (req, res) => {
   res.send("Thunder Tactical AI Backend is running!");
 });
 
-// BigCommerce order lookup
+// ---- ORDER LOOKUP FUNCTION ----
 async function lookupOrderInBigCommerce(orderNumber) {
-  try {
-    const url = `${BC_API_URL}/orders/${orderNumber}`;
-    console.log("Fetching order from:", url);
+  if (!BC_STORE_HASH || !BC_ACCESS_TOKEN) {
+    console.warn("Missing BigCommerce credentials");
+    return {
+      ok: false,
+      message: "Order lookup is not configured correctly.",
+    };
+  }
 
+  const url = `${BC_API_URL}/orders/${orderNumber}`;
+  console.log("BigCommerce request URL:", url);
+
+  try {
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        "X-Auth-Token": BC_ACCESS_TOKEN,
-        "X-Auth-Client": BC_CLIENT_ID,          // ← THIS WAS THE MISSING PIECE
+        "X-Auth-Token": BC_ACCESS_TOKEN,   // Correct header for Store API token
         "Accept": "application/json",
-        "Content-Type": "application/json",
       },
     });
 
     if (response.status === 404) {
       return {
         ok: false,
-        message: `I couldn't find order #${orderNumber}. Please double-check the number and try again.`,
+        message: `I couldn't find an order with the number ${orderNumber}.`,
       };
     }
 
     if (!response.ok) {
       const text = await response.text();
-      console.error("BC API Error:", response.status, text);
+      console.error("BigCommerce error:", response.status, text);
       return {
         ok: false,
-        message: "Having trouble reaching BigCommerce right now — try again in a minute!",
+        message:
+          "I had trouble reaching the order system. Please try again in a moment.",
       };
     }
 
-    const { data: order } = await response.json();
+    const data = await response.json();
+    const order = data.data || data;
 
-    const dateCreated = new Date(order.date_created);
+    const status = order.status || order.status_id || "unknown";
+    const created =
+      order.date_created ||
+      order.date_created_utc ||
+      order.date_modified ||
+      null;
 
-    let reply = `Order #${orderNumber} found!\n`;
-    reply += `Status: **${order.status}**\n`;
-    reply += `Placed on: ${dateCreated.toLocaleDateString("en-US", {
-      month: "long",
-      day: "numeric",
-      year: "numeric",
-    })}\n\n`;
-    reply += `Want items, tracking number, or total? Just ask!`;
+    let reply = `I found order #${orderNumber}. Current status: ${status}.`;
+
+    if (created) {
+      const date = new Date(created);
+      if (!isNaN(date.getTime())) {
+        reply += ` Created on: ${date.toLocaleDateString("en-US")}.`;
+      }
+    }
+
+    reply += " Let me know if you want tracking or item details.";
 
     return { ok: true, message: reply };
-
   } catch (err) {
-    console.error("lookupOrderInBigCommerce failed:", err);
+    console.error("BigCommerce lookup failed:", err);
     return {
       ok: false,
-      message: "Something broke while checking that order — we'll fix it ASAP.",
+      message: "Something went wrong while checking that order.",
     };
   }
 }
 
-// AI Chat endpoint
+// ---- AI CHAT ROUTE ----
 app.post("/ai/chat", async (req, res) => {
   try {
     const userMessage = (req.body.message || "").toString().trim();
-    if (!userMessage) return res.status(400).json({ reply: "Empty message." });
+
+    if (!userMessage) {
+      return res.status(400).json({ reply: "No message provided." });
+    }
 
     // Detect 5–8 digit order number
-    const orderMatch = userMessage.match(/\b\d{5,8}\b/);
-    if (orderMatch) {
-      const orderNumber = orderMatch[0];
+    const orderNumberMatch = userMessage.match(/\b\d{5,8}\b/);
+
+    if (orderNumberMatch) {
+      const orderNumber = orderNumberMatch[0];
       const result = await lookupOrderInBigCommerce(orderNumber);
       return res.json({ reply: result.message });
     }
 
-    // Normal GPT response
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      temperature: 0.7,
+    // Otherwise use AI assistant
+    const response = await openai.chat.completions.create({
+      model: "gpt-4.1-mini",
       messages: [
         {
           role: "system",
-          content: `You are Thunder Tactical's friendly AI assistant (airsoft, gel blasters, tactical gear).
-          Be casual and fun. If someone asks about an order without giving a 5–8 digit number, politely ask for it.
-          Never invent order details.`,
+          content:
+            "You are a helpful Thunder Tactical / Thunder Guns assistant. If the user asks about an order, ask for the order number unless they already provided it.",
         },
         { role: "user", content: userMessage },
       ],
     });
 
     const reply =
-      completion.choices[0]?.message?.content?.trim() ||
-      "Hmm, not sure about that one!";
+      response.choices[0]?.message?.content ||
+      "I'm not sure how to answer that.";
 
     res.json({ reply });
   } catch (err) {
-    console.error("AI route error:", err);
-    res
-      .status(500)
-      .json({ reply: "Oops! Something went wrong on our end. Try again in a sec." });
+    console.error("AI Error:", err);
+    res.status(500).json({ reply: "Error processing request." });
   }
 });
 
 // Start server
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Thunder Tactical AI backend LIVE on port ${PORT}`);
+app.listen(PORT, () => {
+  console.log(`API running on port ${PORT}`);
 });
