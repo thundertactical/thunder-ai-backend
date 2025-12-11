@@ -14,33 +14,31 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-const BC_STORE_HASH = process.env.BC_STORE_HASH;       
-const BC_ACCESS_TOKEN = process.env.BC_ACCESS_TOKEN;   
+const BC_STORE_HASH = process.env.BC_STORE_HASH;
+const BC_ACCESS_TOKEN = process.env.BC_ACCESS_TOKEN;
+
 const BC_API_URL = (
   process.env.BC_API_URL ||
   `https://api.bigcommerce.com/stores/${BC_STORE_HASH}/v3`
 ).replace(/\/$/, "");
 
-// Log environment status (no secrets)
+// Log environment status (safe, no secrets)
 console.log("BigCommerce ENV at startup:", {
   BC_STORE_HASH,
   BC_API_URL,
   hasAccessToken: !!BC_ACCESS_TOKEN,
 });
 
-// Root route
+// Root test route
 app.get("/", (req, res) => {
   res.send("Thunder Tactical AI Backend is running!");
 });
 
-// ---- ORDER LOOKUP FUNCTION ----
+// ---- ORDER LOOKUP ----
 async function lookupOrderInBigCommerce(orderNumber) {
   if (!BC_STORE_HASH || !BC_ACCESS_TOKEN) {
     console.warn("Missing BigCommerce credentials");
-    return {
-      ok: false,
-      message: "Order lookup is not configured correctly.",
-    };
+    return { ok: false, message: "Order lookup is not configured correctly." };
   }
 
   const url = `${BC_API_URL}/orders/${orderNumber}`;
@@ -50,7 +48,7 @@ async function lookupOrderInBigCommerce(orderNumber) {
     const response = await fetch(url, {
       method: "GET",
       headers: {
-        "X-Auth-Token": BC_ACCESS_TOKEN,   // Correct header for Store API token
+        "X-Auth-Token": BC_ACCESS_TOKEN, // Correct token header
         "Accept": "application/json",
       },
     });
@@ -112,7 +110,7 @@ app.post("/ai/chat", async (req, res) => {
       return res.status(400).json({ reply: "No message provided." });
     }
 
-    // Detect 5–8 digit order number
+    // Detect a 5–8 digit order number
     const orderNumberMatch = userMessage.match(/\b\d{5,8}\b/);
 
     if (orderNumberMatch) {
